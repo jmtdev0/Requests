@@ -83,6 +83,11 @@ final class SniServer {
 	 * @throws \RuntimeException If the certificate or server setup fails.
 	 */
 	public function __construct() {
+		$unsupported_reason = self::getUnsupportedReason();
+		if ($unsupported_reason !== null) {
+			throw new \RuntimeException($unsupported_reason);
+		}
+
 		$this->directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'requests-sni-' . uniqid('', true);
 
 		if (!mkdir($this->directory, 0700, true)) {
@@ -96,6 +101,37 @@ final class SniServer {
 			$this->close();
 			throw $exception;
 		}
+	}
+
+	/**
+	 * Get the reason why the local SNI server cannot run, if any.
+	 *
+	 * @return string|null
+	 */
+	public static function getUnsupportedReason() {
+		$required_functions = [
+			'openssl_pkey_new',
+			'openssl_csr_new',
+			'openssl_csr_sign',
+			'openssl_x509_export',
+			'openssl_pkey_export',
+			'proc_open',
+			'proc_close',
+			'proc_get_status',
+			'proc_terminate',
+		];
+
+		foreach ($required_functions as $function) {
+			if (!function_exists($function)) {
+				return sprintf('The SNI test requires the PHP function %s.', $function);
+			}
+		}
+
+		if (self::findPython() === null) {
+			return 'The SNI test requires Python 3. Set REQUESTS_SNI_PYTHON to override the executable.';
+		}
+
+		return null;
 	}
 
 	/**
@@ -183,10 +219,6 @@ final class SniServer {
 	 * @throws \RuntimeException If OpenSSL cannot create the certificates.
 	 */
 	private function createCertificates() {
-		if (!function_exists('openssl_pkey_new') || !function_exists('openssl_csr_new')) {
-			throw new \RuntimeException('The OpenSSL extension is required for the SNI test.');
-		}
-
 		$config_file = $this->directory . DIRECTORY_SEPARATOR . 'openssl.cnf';
 		$config      = "[req]\n";
 		$config     .= "prompt = no\n";
@@ -346,9 +378,9 @@ final class SniServer {
 	 * @throws \RuntimeException If the endpoint cannot be started.
 	 */
 	private function startServer() {
-		$python = getenv('REQUESTS_SNI_PYTHON');
-		if ($python === false || $python === '') {
-			$python = 'python3';
+		$python = self::findPython();
+		if ($python === null) {
+			throw new \RuntimeException('The SNI test requires Python 3. Set REQUESTS_SNI_PYTHON to override the executable.');
 		}
 
 		$script   = __DIR__ . DIRECTORY_SEPARATOR . 'sni_server.py';
@@ -382,7 +414,7 @@ final class SniServer {
 				$this->server_output .= $output;
 			}
 
-			if (preg_match('/(?:^|\n)PORT=(\d+)(?:\n|$)/', $this->server_output, $matches)) {
+			if (preg_match('/(?:^|\r?\n)PORT=(\d+)(?:\r?\n|$)/', $this->server_output, $matches)) {
 				$port = (int) $matches[1];
 				break;
 			}
@@ -412,5 +444,54 @@ final class SniServer {
 		}
 
 		$this->url = 'https://localhost:' . $port . '/';
+	}
+
+	/**
+	 * Find a usable Python 3 executable.
+	 *
+	 * @return string|null
+	 */
+	private static function findPython() {
+		$candidates = [];
+		$configured = getenv('REQUESTS_SNI_PYTHON');
+		if ($configured !== false && $configured !== '') {
+			$candidates[] = $configured;
+		}
+
+		$candidates[] = 'python3';
+		$candidates[] = 'python';
+
+		foreach (array_unique($candidates) as $candidate) {
+			$descriptors = [
+				0 => ['pipe', 'r'],
+				1 => ['pipe', 'w'],
+				2 => ['pipe', 'w'],
+			];
+			$process     = proc_open(escapeshellarg($candidate) . ' --version', $descriptors, $pipes);
+			if (!is_resource($process)) {
+				continue;
+			}
+
+			fclose($pipes[0]);
+			$output = stream_get_contents($pipes[1]);
+			$error  = stream_get_contents($pipes[2]);
+			fclose($pipes[1]);
+			fclose($pipes[2]);
+
+			if ($output === false) {
+				$output = '';
+			}
+
+			if ($error !== false) {
+				$output .= $error;
+			}
+
+			$status = proc_close($process);
+			if ($status === 0 && preg_match('/Python\s+3(?:\.\d+)+/', $output)) {
+				return $candidate;
+			}
+		}
+
+		return null;
 	}
 }

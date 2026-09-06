@@ -921,6 +921,12 @@ abstract class BaseTestCase extends TestCase {
 			return;
 		}
 
+		$unsupported_reason = SniServer::getUnsupportedReason();
+		if ($unsupported_reason !== null) {
+			$this->markTestSkipped($unsupported_reason);
+			return;
+		}
+
 		$server = new SniServer();
 
 		try {

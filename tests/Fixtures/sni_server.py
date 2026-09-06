@@ -22,7 +22,7 @@ def create_listener(port):
             v6_only = getattr(socket, "IPV6_V6ONLY", None)
             if v6_only is not None:
                 listener.setsockopt(socket.IPPROTO_IPV6, v6_only, 0)
-            listener.bind(("::", port))
+            listener.bind(("::1", port))
             return listener
         except OSError:
             if "listener" in locals():
@@ -45,13 +45,15 @@ def serve(arguments):
     wrong_context.set_servername_callback(select_certificate)
 
     listener = create_listener(arguments.port)
-    listener.listen(1)
-    listener.settimeout(SERVER_TIMEOUT)
 
     try:
+        listener.listen(1)
+        listener.settimeout(SERVER_TIMEOUT)
         print("PORT={}".format(listener.getsockname()[1]), flush=True)
-        connection, _address = listener.accept()
+        connection = None
         try:
+            connection, _address = listener.accept()
+            connection.settimeout(SERVER_TIMEOUT)
             secure_connection = wrong_context.wrap_socket(connection, server_side=True)
             with secure_connection:
                 request = b""
@@ -70,6 +72,9 @@ def serve(arguments):
         except (OSError, ssl.SSLError) as error:
             print("{}: {}".format(type(error).__name__, error), file=sys.stderr)
             return 1
+        finally:
+            if connection is not None:
+                connection.close()
     except socket.timeout:
         print("Timed out waiting for the SNI test request.", file=sys.stderr)
         return 1
