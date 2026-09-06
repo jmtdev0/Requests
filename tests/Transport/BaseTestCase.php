@@ -10,6 +10,7 @@ use WpOrg\Requests\Hooks;
 use WpOrg\Requests\Iri;
 use WpOrg\Requests\Requests;
 use WpOrg\Requests\Response;
+use WpOrg\Requests\Tests\Fixtures\SniServer;
 use WpOrg\Requests\Tests\Fixtures\TransportMock;
 use WpOrg\Requests\Tests\TestCase;
 use WpOrg\Requests\Tests\TypeProviderHelper;
@@ -901,15 +902,12 @@ abstract class BaseTestCase extends TestCase {
 	}
 
 	/**
-	 * Test that the transport supports Server Name Indication with HTTPS
+	 * Test that the transport sends Server Name Indication with HTTPS.
 	 *
-	 * humanmade.com (owned by Human Made and used with permission) points to
-	 * CloudFront, and will fail if SNI isn't sent.
-	 *
-	 * {@internal Skipped for the time being. The above no longer holds: the host serves the
-	 * same certificate whether SNI is sent or not, so a transport which stopped sending it
-	 * would still pass, and the host has meanwhile started refusing requests outright.
-	 * See https://github.com/WordPress/Requests/issues/1077.}
+	 * The local test server presents a trusted certificate when SNI is sent
+	 * and an untrusted certificate otherwise. This makes the test independent
+	 * of third-party hosts and verifies that SNI remains enabled when hostname
+	 * verification is disabled.
 	 *
 	 * @dataProvider dataSNISupport
 	 *
@@ -918,18 +916,20 @@ abstract class BaseTestCase extends TestCase {
 	 * @return void
 	 */
 	public function testSNISupport($options) {
-		$this->markTestSkipped(
-			'This test does not verify SNI support anymore.'
-			. ' See https://github.com/WordPress/Requests/issues/1077'
-		);
-
 		if ($this->skip_https) {
 			$this->markTestSkipped('SSL support is not available.');
 			return;
 		}
 
-		$request = Requests::head('https://humanmade.com/', [], $this->getOptions($options));
-		$this->assertSame(200, $request->status_code);
+		$server = new SniServer();
+
+		try {
+			$options['verify'] = $server->getCaFile();
+			$request           = Requests::head($server->getUrl(), [], $this->getOptions($options));
+			$this->assertSame(200, $request->status_code);
+		} finally {
+			$server->close();
+		}
 	}
 
 	/**
